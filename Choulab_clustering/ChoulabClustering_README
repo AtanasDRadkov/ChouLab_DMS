@@ -1,0 +1,561 @@
+Choulab clustering
+
+1
+Convert Enrich2 data:
+python ConvertEnrich.py AtanasEnrich.tsv > AtanasEnrichForClustering.CSV
+-the file AtanasEnrich.tsv is the same as the original file coming directly from Enrich2 named main_identifiers_scores.tsv
+
+2
+Cluster fitness data:
+python ProfileKMeansClustering2.py AtanasEnrichForClustering.CSV 154 0.4 0.4 -0.25 -0.4 Categories > AtanasEnrich_clusters.txt
+
+3
+Plotting fitness data:
+python PlotSelectionHeatMap_redblue_physiochem_pdf.py AtanasEnrichForPlotting.CSV
+-first add the two lines below at the bottom of the AtanasEnrichForClustering.CSV file, and save that file as AtanasEnrichForPlotting.CSV
+-each line starts from the "position" column and ends on "avg" column (basically across the entire matrix)
+-one line is just zeros and the second line starts with a zero at "position" and then spans the data minimum and maximum (you can adjust the range between the minimum and maximum for your data)
+0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0
+0	-2	-1.8180182	-1.6362182	-1.4544182	-1.2726182	-1.0908182	-0.9090182	-0.7272182	-0.5454182	-0.3636182	-0.1818182	0	0.18181818	0.36361818	0.54541818	0.72721818	0.90901818	1.09081818	1.27261818	1.45441818	1.63621818	1.81801818	2
+
+4
+Plotting fitness data for individual positions:
+python PlotSelectionHeatMap_redblue_physiochem_selected_pdf.py AtanasEnrichForPlotting.CSV 110,116,134,147
+-change whatever positions numbers you want at the end
+
+
+
+
+
+
+
+
+
+
+Step1 - ConvertEnrich.py script:
+import Bio
+from Bio.Seq import Seq
+import sys
+import numpy as np
+
+infile = open(sys.argv[1], 'r')
+data = {}
+
+counter = 0
+for line in infile:
+	counter +=1
+	
+	if counter <=2:
+		continue
+	
+	elif line[:3] == "_wt":
+		continue
+		
+	fields = line.split()
+	score = float(fields[-1])
+	
+	pos, codon = fields[0].split("_")
+	
+	pos = int(pos) + 1
+	seq = Seq(codon)
+	aa = str(seq.translate())
+	
+	try:
+		test = data[pos]
+	except KeyError:
+		data[pos] = {}
+
+
+	try:
+		test = data[pos][aa]
+	except KeyError:
+		data[pos][aa] = []
+	
+	data[pos][aa].append(score)
+	
+	
+	
+positions = sorted(list(set(data.keys())))
+aas = "ACDEFGHIKLMNPQRSTVWY*"
+
+print("Position  ,A,C,D,E,F,G,H,I,K,L,M,N,P,Q,R,S,T,V,W,Y,*,,avg")
+
+for position in range(1,np.amax(positions)+1):
+	fitnesses = []
+	all = []
+	for aa in aas:
+		try:
+			fitnesses.append(str(np.mean(data[position][aa])))
+			all.append(np.mean(data[position][aa]))
+		except KeyError:
+			fitnesses.append('nan')
+	avg = np.mean(all)
+	fitnesses.append('0.0')
+	fitnesses.append(str(avg))
+	
+	print(f"{position} ,{','.join(fitnesses)}")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Step2 - ProfileKMeansClustering2.py script:
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import sys
+import math
+import numpy as np
+import random
+from operator import itemgetter
+from itertools import combinations
+
+
+def parseMap(filename, high_limit):
+	labels = ['A','C','D','E','F','G','H','I','K','L','M','N','P','Q','R','S','T','V','W','Y','*', '','avg']
+	selection_map = pd.read_csv(filename, index_col = 'Position  ')
+	selection_map.columns = labels
+	selection_map.clip(upper=high_limit)
+	muts = ['A','C','D','E','F','G','H','I','K','L','M','N','P','Q','R','S','T','V','W','Y','*']
+	selection_map = selection_map[muts]
+	
+	return selection_map
+
+
+def getVectorFromMap(map, position, include_nan=False):
+	""""""
+	if isinstance(position, float): #Make this an assert statement instead???
+		position = int(position)
+	vector = np.array(map.iloc[position, :].values).flatten()
+	if include_nan:
+		return vector
+	elif not include_nan:
+		return vector[~np.isnan(vector)]
+
+
+def calculateVectorVectorDistance(vector1, vector2):
+	""""""
+	length = np.amin([len(vector1),len(vector2)])
+	vector1 = -np.sort(-vector1)
+	vector2 = -np.sort(-vector2)
+	#implement random value removal numpy delete function
+	vector1 = vector1[:length]
+	vector2 = vector2[:length]
+	
+	return np.mean(np.abs(vector1 -vector2))
+
+
+def evaluateDistances(distances, method="Top3"):
+	""""""
+	if method=="Top3" or method=="top3":
+		distances = np.sort(distances)
+		return np.mean(distances[:3])	
+	elif method=="Top2" or method=="top2":
+		distances = np.sort(distances)
+		return np.mean(distances[:2])	
+	elif method =="mean" or method =="Mean":
+		return np.mean(distances)	
+	elif method =="median" or method =="Median":
+		return np.median(distances)		
+	elif method =="mixed" or method =="Mixed":
+		return np.mean(distances) + np.mean(distances[:2])	
+	else:
+		print(f"{method} is not an acceptable evaluation method.")
+		exit()
+
+
+def calculateVectorClusterDistance(vector1, cluster_members, map):
+	"""The vector is a iterable object of fitness values for one position.\ 
+	The cluster is an iterable object of interger values for positions in the fitness"""
+
+	distances = []
+	for position in cluster_members:
+		vector = getVectorFromMap(map, position)
+		distances.append(calculateVectorVectorDistance(vector1, vector))
+	
+	return evaluateDistances(distances)
+
+
+def calculateClusterClusterDistance(cluster1_members, cluster2_members, map):
+	
+	distances = []
+	for position in cluster1_members:
+		vector = getVectorFromMap(map, position)
+		distances.append(calculateVectorClusterDistance(vector, cluster2_members, map))
+		
+	for position in cluster2_members:
+		vector = getVectorFromMap(map, position)
+		distances.append(calculateVectorClusterDistance(vector, cluster1_members, map))
+
+	return evaluateDistances(distances, method="mean")
+
+
+def assignCluster(map, position, clusters):
+	""""""
+	vector = getVectorFromMap(map, position)
+	rankings = []
+	for cluster in clusters.keys():
+		rankings.append((cluster, calculateVectorClusterDistance(vector, clusters[cluster], map)))
+	rankings.sort(key=itemgetter(1))
+	return rankings[0][0] #Identity of the closest cluster
+	
+
+def clustering(map, clusters, total, rounds):
+	""""""
+	#print(clusters)
+	for round in range(rounds):
+		new_clusters = {}
+		for position in range(total):
+			closest = assignCluster(map, position, clusters)
+			try:
+				new_clusters[closest].append(position)
+			except KeyError:
+				new_clusters[closest] = [position]
+		clusters = new_clusters
+
+	return clusters
+
+
+def generateRandomClusters(map, total, num_clusters):
+	""""""
+	positions = random.sample(range(total), num_clusters)
+	clusters = {}
+	for position in positions:
+		print(position)
+		clusters[position] = [position]
+	
+	return clusters
+
+
+def initializeRandomStart(map, total, num_clusters):
+	""""""
+	clusters = generateRandomClusters(map, total, num_clusters)
+	return clustering(map, clusters, total, 1)
+
+		
+def generateCategories(length):
+	""""""
+	categories = {}
+	categories['Beneficial1'] = np.linspace(high, 0.0, length)
+	categories['Beneficial2'] = np.linspace(high/2, 0.0, length)
+	categories['Beneficial3'] = np.linspace(high/3, 0.0, length)
+	categories['Beneficial4'] = np.linspace(high/2, low/8, length)
+	categories['Tolerant1'] = np.linspace(0.0, 0.0, length)
+	categories['Mixed1'] = np.linspace(high, low, length)
+	categories['Mixed2'] = np.linspace(high/2, low/2, length)
+	categories['Mixed3'] = np.linspace(high/2, low/3, length)
+	categories['Mixed4'] = np.linspace(high/3, low/3, length)
+	categories['Mixed5'] = np.linspace(high/4, low/4, length)
+	#Add more mixed categories?
+	categories['Deleterious1'] = np.linspace(0, low/2, length)
+	categories['Deleterious2'] = np.linspace(0, low, length)
+	try:
+		categories['Deleterious3'] = np.linspace(low, low, length)
+		categories['Deleterious3'][0] = 0.0 #Wild-type
+	except IndexError:
+		pass
+	
+	try:
+		categories['Deleterious4'] = np.linspace(low, dead, length)
+		categories['Deleterious4'][0] = 0.0 #Wild-type
+	except IndexError:
+		pass
+		
+	try:
+		Intolerant = np.linspace(dead, dead, length)
+		Intolerant[0] = 0.0 # Wild-type
+		categories['Intolerant1'] = Intolerant
+	except IndexError:
+		pass
+	
+	try:
+		Intolerant[1] = 0.0 # Wild-type + one acceptable mutation
+	except IndexError:
+		pass
+		
+	categories['Intolerant2'] = Intolerant 
+	try:	
+		Intolerant[2] = 0.0 # Wild-type + two acceptable mutations
+	except IndexError:
+		pass
+		
+		#categories['Intolerant3'] = Intolerant 
+	
+	return categories
+
+
+def initializeOnCategories(map, total):
+	""""""
+	clusters = {}
+
+	for position in range(total):
+		rankings = []
+		vector = getVectorFromMap(map, position)
+		categories = generateCategories(len(vector))
+		for category in categories.keys():
+			rankings.append((category, calculateVectorVectorDistance(vector, categories[category])))
+		rankings.sort(key=itemgetter(1))
+		closest = rankings[0][0]
+		try:
+			clusters[closest].append(position)
+		except KeyError:
+			clusters[closest] = [position]		
+		
+	return clustering(map, clusters, total, 1)
+
+
+def condenseRelatedClusters(clusters):
+	""""""
+	condensed_clusters = {}
+	for cluster in clusters.keys():
+		if isinstance(cluster, int):
+			new_cluster = cluster #for random clusters with int names
+		elif isinstance(cluster, str):
+			new_cluster = cluster[:-1] # for categories with string names
+	
+		try:
+			condensed_clusters[new_cluster].extend(clusters[cluster])
+		except KeyError:
+			condensed_clusters[new_cluster] = clusters[cluster]
+		
+	return condensed_clusters
+
+
+def condenseClustersToNum(clusters, num_clusters, map):
+	while len(clusters.keys()) > num_clusters:
+		new_clusters = {}
+		pairs = list(combinations(clusters.keys(), 2))
+		rankings = []
+		for pair in pairs:
+			rankings.append((pair, calculateClusterClusterDistance(clusters[pair[0]], clusters[pair[1]], map)))
+		rankings.sort(key=itemgetter(1))
+		closest = rankings[0][0]
+		labels = list(clusters.keys())
+		labels.remove(closest[0])
+		labels.remove(closest[1])
+		new_label = f"{closest[0]}-{closest[1]}"
+		data = []
+		data.extend(clusters[closest[0]])
+		data.extend(clusters[closest[1]])
+		new_clusters[new_label] = data
+		
+		for cluster in labels:
+			new_clusters[cluster] = clusters[cluster]
+		
+		clusters = new_clusters
+		
+	return clusters
+
+#make all of this argparse
+mapfile = sys.argv[1]
+num_residues = int(sys.argv[2])
+high_limit = float(sys.argv[3])
+high = float(sys.argv[4])
+low = float(sys.argv[5])
+dead = float(sys.argv[6])
+cluster_type = str(sys.argv[7])
+if cluster_type == "Random" or cluster_type == "random":
+	num_clusters = int(sys.argv[8])
+	num_final_clusters = int(sys.argv[9])
+
+
+selection_map = parseMap(mapfile, high_limit)
+	
+if cluster_type == "Categories" or cluster_type == "categories":
+	seed_clusters = initializeOnCategories(selection_map, num_residues)
+elif cluster_type == "Random" or cluster_type == "random":
+	seed_clusters = initializeRandomStart(selection_map, num_residues, num_clusters)
+
+first_clusters = clustering(selection_map, seed_clusters, num_residues, 10)
+
+if cluster_type == "Categories" or cluster_type == "categories":
+	condensed_clusters = condenseRelatedClusters(first_clusters)
+elif cluster_type == "Random" or cluster_type == "random":
+	condensed_clusters = condenseClustersToNum(first_clusters, num_final_clusters, selection_map)
+
+
+second_clusters = clustering(selection_map, condensed_clusters, num_residues, 10)
+
+for cluster in second_clusters:
+	print(cluster)
+	outcluster = []
+	for pos in second_clusters[cluster]:
+		outcluster.append(str(pos+1))
+	print(','.join(outcluster))
+	print('')
+
+
+
+
+
+
+
+
+
+Step3 - PlotSelectionHeatMap_redblue_physiochem_pdf.py script:
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import sys
+#%matplotlib inline
+import math
+import numpy as np
+import matplotlib
+from matplotlib.colors import LinearSegmentedColormap
+matplotlib.rcParams['pdf.fonttype'] = 42
+
+#print sys.argv[1]
+qc_map = pd.read_csv(sys.argv[1], index_col = 'Position  ')
+labels = ['A','C','D','E','F','G','H','I','K','L','M','N','P','Q','R','S','T','V','W','Y','*', '','avg']
+qc_map.columns = labels
+
+order = ['*','P','C','G','A','V','I','L','M','W','F','Y','H','K','R','S','T','N','Q','D','E', '','avg']
+
+qc_map = qc_map[order]
+
+sns.set(font_scale=1.2)
+sns.set_style({"savefig.dpi": 200})
+
+
+colormap = cmap = LinearSegmentedColormap.from_list('mycmap', [(0.0, '#555555'),
+													(0.025, '#555555'),
+													(0.030, '#C3C3C3'),
+													(0.08, '#C3C3C3'),
+													(0.0825, '#000080'),
+													(0.15, '#000080'),
+                                                    (0.35, '#0000FF'),
+                                                    (0.4985, '#FFFFFF'),
+                                                    (0.5015, '#FFFFFF'),
+                                                    (0.6, "#FF0000"),
+						    (0.70, "#b22222"),
+                                                    (1.0, '#b22222')])
+                                                    
+colormap.set_bad('gray',0.2)
+fontsize_pt = 18
+dpi = 100
+matrix_height_pt = fontsize_pt * qc_map.shape[0]
+matrix_height_in = matrix_height_pt / dpi
+top_margin = 0.04
+bottom_margin = 0.04
+figure_height = matrix_height_in / (1 - top_margin - bottom_margin)
+fig, ax = plt.subplots(
+        figsize=(6,figure_height), 
+        gridspec_kw=dict(top=1-top_margin, bottom=bottom_margin))
+ax = sns.heatmap(qc_map, cmap=colormap, linewidths=.1, ax=ax) #vmax = float(sys.argv[2]) vmin = float(sys.argv[3]))
+ax.xaxis.tick_top()
+ax.set_xticks(np.arange(len(order)))
+ax.set_xticklabels(order, fontsize=fontsize_pt*0.8)
+ax.set_yticks(np.arange(len(qc_map)))
+ax.set_yticklabels(qc_map.index.tolist(), fontsize=fontsize_pt*0.8)
+#ax.yaxis.tick_right()
+plt.yticks(rotation=0)
+#fig = ax.get_figure()
+#length = len(qc_map) * 0.175
+#fig.set_size_inches(5, length)
+figname = sys.argv[1].split(".csv")[0] + "_physiochem_redblue.pdf"
+plt.tight_layout()
+fig.savefig(figname)
+
+plt.show()
+
+
+
+
+
+
+
+
+
+
+4 - PlotSelectionHeatMap_redblue_physiochem_selected_pdf.py script:
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import sys
+#%matplotlib inline
+import math
+import numpy as np
+import matplotlib
+from matplotlib.colors import LinearSegmentedColormap
+matplotlib.rcParams['pdf.fonttype'] = 42
+
+DHFR_seq = "MISLIAALAVDRVIGMENAMPWNLPADLAWFKRNTLNKPVIMGRHTWESIGRPLPGRKNIILSSQPGTDDRVTWVKSVDEAIAACGDVPEIMVIGGGRVYEQFLPKAQKLYLTHIDAEVEGDTHFPDYEPDDWESVFSEFHDADAQNSHSYCFEILERR*"
+
+
+#print sys.argv[1]
+
+qc_map = pd.read_csv(sys.argv[1], index_col = 'Position  ')
+labels = ['A','C','D','E','F','G','H','I','K','L','M','N','P','Q','R','S','T','V','W','Y','*', '','avg']
+qc_map.columns = labels
+
+order = ['*','P','C','G','A','V','I','L','M','W','F','Y','H','K','R','S','T','N','Q','D','E', '','avg']
+
+qc_map = qc_map[order]
+
+locations = []
+WT_aas = []
+positions = sys.argv[2].split(',')
+for pos in positions:
+	locations.append(int(pos))
+	WT_aas.append(DHFR_seq[int(pos)-1])
+locations = [x for _,x in sorted(zip(WT_aas,locations),key=lambda y:order.index(y[0]))]
+#locations = sorted(locations, key=lambda x:order.index(x))
+locations = sorted(locations)
+locations.append(0)
+qc_map = qc_map.loc[locations]
+
+sns.set(font_scale=1.2)
+sns.set_style({"savefig.dpi": 200})
+
+
+colormap = cmap = LinearSegmentedColormap.from_list('mycmap', [(0.0, '#555555'),
+													(0.025, '#555555'),
+													(0.030, '#C3C3C3'),
+													(0.08, '#C3C3C3'),
+													(0.0825, '#000080'),
+													(0.15, '#000080'),
+                                                    (0.35, '#0000FF'),
+                                                    (0.4985, '#FFFFFF'),
+                                                    (0.5015, '#FFFFFF'),
+                                                    (0.6, "#FF0000"),
+						    (0.70, "#b22222"),
+                                                    (1.0, '#b22222')])
+
+colormap.set_bad('black',1.)
+fontsize_pt = 18
+dpi = 100
+matrix_height_pt = fontsize_pt * qc_map.shape[0]
+matrix_height_in = matrix_height_pt / dpi
+top_margin = 0.04
+bottom_margin = 0.04
+figure_height = matrix_height_in / (1 - top_margin - bottom_margin)
+fig, ax = plt.subplots(
+        figsize=(6,figure_height),
+        gridspec_kw=dict(top=1-top_margin, bottom=bottom_margin))
+ax = sns.heatmap(qc_map, cmap=colormap, linewidths=.1, ax=ax) #vmax = float(sys.argv[2]) vmin = float(sys.argv[3]))
+ax.xaxis.tick_top()
+ax.set_xticks(np.arange(len(order)))
+ax.set_xticklabels(order, fontsize=fontsize_pt*0.8)
+ax.set_yticks(np.arange(len(qc_map)))
+ax.set_yticklabels(qc_map.index.tolist(), fontsize=fontsize_pt*0.8)
+#ax.yaxis.tick_right()
+plt.yticks(rotation=0)
+#fig = ax.get_figure()
+#length = len(qc_map) * 0.175
+#fig.set_size_inches(5, length)
+figname = sys.argv[1].split(".csv")[0] + "_physiochem_redblue.pdf"
+#plt.tight_layout()
+fig.savefig(figname)
+
+plt.show() 
