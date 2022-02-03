@@ -1,0 +1,286 @@
+Choulab DMS data analysis
+
+1
+Initial data file manipulations:
+A-check sequencing data for garbage
+B-take only first 15bp (that's the barcode)
+C-reverse complement these 15bp (that’s how the barcode dictionary is set up)
+
+
+A-check sequencing data for garbage:
+# usage: python Filter_check_Hayden.py <file name>.fastq
+
+import Bio
+from Bio import SeqIO
+import sys
+
+in_file_1 = open(sys.argv[1], 'rU')
+
+constant = 'TAGTAAGCATG'
+count_good = 0.0 
+count_total = 0.0
+
+for record in SeqIO.parse(in_file_1, 'fastq'):
+	count_total += 1
+	if constant ==  str(record.seq[15:30]):
+		count_good	+= 1
+in_file_1.close()
+
+log_file =  open('Script01_logfile.txt', 'w')
+
+log_file.write('Good reads = %d \n' % (count_good) )
+log_file.write('Total reads =  %d \n' % (count_total))
+log_file.write('Percent good reads =  %f \n' % (count_good/count_total))
+log_file.close()
+
+
+B-take only first 15bp:
+# usage: cat <file name>.fastq | python First15only.py - | awk '{print "@"$1"\n"substr($3,1,15)"\n+\n"substr($4,1,15)"\n"}' > <file name>.fastq
+
+import sys
+
+#file = sys.stdin
+f=sys.stdin
+for line in f:
+    hdr = line.rstrip('\n')[1:]
+    seq = f.next().rstrip('\n')
+    f.next()
+    qual = f.next().rstrip('\n')
+    print "\t".join( (hdr, seq, qual ) )
+
+
+C-reverse complement the first 15bp (that’s the sequence we need for the dictionary):
+# usage: cat <file name>.fastq | python revComp.py - > <file name>.fastq
+
+import sys
+
+
+def reverseComplement(sequence):
+	complement = {'A':'T','C':'G','G':'C','T':'A','N':'N'}
+	return "".join([complement.get(nt, '') for nt in sequence[::-1]])
+
+
+
+f=sys.stdin
+
+for line in f:
+    hdr = line.rstrip('\n')
+    seq = f.next().rstrip('\n')
+    rcseq = reverseComplement(seq)
+    f.next()
+    qual = f.next().rstrip('\n')[::-1]
+    f.next()
+    print "\n".join( (hdr, rcseq, "+", qual ) )
+
+
+
+
+2
+Enrich2 analysis:
+DMS data analysis “pipeline”:
+1)Follow the online instructions to install Enrich2:
+a.	I recommend reading through the Enrich2 docs before installing or running anything
+b.	https://enrich2.readthedocs.io/en/latest/
+c.	I also recommend reading about the Anaconda data science distribution
+d.	https://www.anaconda.com/download/#macos
+e.	Installation of Enrich2 through Anaconda is explained on the Enrich2 website
+f.	Spend some time here learning about Anaconda, Enrich2, and Python
+g.	https://conda.io/docs/user-guide/index.html
+h.	Don’t worry if this step takes a bit longer. It’s worth it!
+2)These are the six DNA sequence data files you will need for the analysis:
+-3 bioreps for time point initial time point and 3 bioreps for final timepoints (120min)
+-these are the files only from the M9 minimal medium experiment
+a.	zero_rep1_S1_R1_001_1to15_RC.fastq
+b.	zero_rep2_S2_R1_001_1to15_RC.fastq
+c.	zero_rep3_S3_R1_001_1to15_RC.fastq
+d.	120_rep1_S4_R1_001_1to15_RC.fastq
+e.	120_rep2_S5_R1_001_1to15_RC.fastq
+f.	120_rep2_S6_R1_001_1to15_RC.fastq
+3)You will also need two dictionaries:
+-see "Choulab dictionary" file for more info on how to prepare these dictionaries
+a.	barcode dictionary containing variant DNA sequences – used to match barcode to variant DNA sequence
+b.	apply this dictionary to create a heatmap
+c.	barcode dictionary containing variant identifiers – used to match barcode to variant ID
+d.	Apply this dictionary for counts, averages, and standard errors
+e.	The best way is to do the analysis with each dictionary and see what the output files are
+4)Run the Enrich2 analysis:
+a.	Start the GUI by going to you Enrich2 environment and typing enrich_gui
+b.	If I give you any commands to type up, the exact words that needs to be entered will be in bold
+c.	We want the variant counts for each file, as well as averages and standard error
+d.	Run the “counts only” option and normalize to “wild-type”
+e.	The count files can later be used in an experiment to get the averages and standard error
+f.	To get averages and standard error, set up the analysis as a single Experiment, a single Condition, and 3 Selections, and then two timepoints for each Selection (timepoint 0 and 1, basically the initial and the final timepoints)
+g.	also select the “Log Ratios (Enrich2)” option
+h.	Feel free to try some of the other options
+
+
+
+
+5)Translating the codons from the tsv file to amino acid letters and transitioning to Excel for further analysis:
+a.	This step assumes you have used the barcode dictionary containing variant identifiers (I typically use the DNA sequences dictionary only to produce heatmaps but not for any other analysis)
+b.	After the Enrich2 analysis, go to the tsv folder and find this file main_identifiers_counts.tsv
+c.	It contains the residue position and the corresponding codon, as well as the counts for each timepoint
+d.	Remove the first two lines, just so you have this as the first line 
+timepoint	c_0	c_1	c_0	c_1	c_0	c_1
+e.	Also check the entire file for any NA (this would indicate that the identifier was found only in one of the timepoints but not the others – remove those entire lines)
+f.	Run this script tsv_to_txt_ADR_counts.py
+g.	The script should produce a text file called counts containing six columns 
+1) position 
+2) codon
+3) single letter amino acid
+4) counts for rep1 tp0
+5) counts for rep1 tp1
+6) counts for rep2 tp0
+7) counts for rep2 tp1
+8) counts for rep3 tp0
+9) counts for rep3 tp1
+h.	Run the script tsv_to_txt_ADR_scores.py using output file main_identifiers_scores.tsv – it works the same way as the last script but it extracts the scores only
+i.	Use output file main_identifiers_scores_pvalues_wt.tsv to extract the p-values
+j.	I usually go into Excel after this and continue there
+k.	IMPORTANT!!! Run the script PlotFitnessDistributions_ADR using output file main_identifiers_scores.tsv to separate the scores for synonymous and non-synonymous variants
+
+
+
+
+
+
+
+
+
+tsv_to_txt_ADR_counts.py script:
+# How to run: 
+# tsv_to_txt_ADR_counts.py main_identifiers_counts.tsv > counts.txt
+# script also translates codons into amino acids
+
+import sys
+import cPickle as pic
+import numpy as np
+from collections import defaultdict
+import string
+import operator
+
+table = string.maketrans('T', 'U')
+TRANSLATE = {'ACC': 'T', 'GUC': 'V', 'ACA': 'T', 'AAA': 'K', 'GUU': 'V', 'AAC': 'N', 'CCU': 'P', 'UAU': 'Y', 'AGC': 'S', 'CUU': 'L', 'CAU': 'H', 'AAU': 'N', 'ACU': 'T', 'GUG': 'V', 'CAC': 'H', 'ACG': 'T', 'AGU': 'S', 'CCA': 'P', 'CCG': 'P', 'CCC': 'P', 'UGU': 'C', 'GGU': 'G', 'UCU': 'S', 'AUG': 'M', 'UGC': 'C', 'CAG': 'Q', 'UGA': '*', 'UGG': 'W', 'CGG': 'R', 'UCG': 'S', 'AGG': 'R', 'GGG': 'G', 'UCC': 'S', 'UCA': 'S', 'UAA': '*', 'GGA': 'G', 'UAC': 'Y', 'CGU': 'R', 'GAA': 'E', 'AUA': 'I', 'GCA': 'A', 'AUC': 'I', 'GGC': 'G', 'GCG': 'A', 'CGC': 'R', 'CUG': 'L', 'GAG': 'E', 'CUC': 'L', 'AGA': 'R', 'CUA': 'L', 'GCC': 'A', 'AUU': 'I', 'AAG': 'K', 'CAA': 'Q', 'UUU': 'F', 'GAC': 'D', 'GUA': 'V', 'CGA': 'R', 'UAG': '*', 'GCU': 'A', 'UUG': 'L', 'UUA': 'L', 'GAU': 'D', 'UUC': 'F'}
+transform = {'A': 9, 'C': 8, 'E': 20, 'D': 19, 'G': 10, 'F': 2, 'I': 5, 'H': 16, 'K': 18, '*': 0, 'M': 6, 'L': 4, 'N': 14, 'Q': 15, 'P': 11, 'S': 12, 'R': 17, 'T': 13, 'W': 1, 'V': 7, 'Y': 3}
+
+tsv =  open(sys.argv[1], 'r')
+
+headers = tsv.readline().strip().split()
+for line in tsv:
+	l_list = line.strip().split()
+	ID = l_list[0]
+	T1_0 = l_list[1]
+	T1_1 = l_list[2]
+	T2_0 = l_list[3]
+	T2_1 = l_list[4]
+	T3_0 = l_list[5]
+	T3_1 = l_list[6]
+	try:
+		pos = int(ID.split('_')[0])
+		mut = ID.split('_')[1]
+		codon = string.translate(mut, table)
+		aa = str(TRANSLATE[codon])
+		aa_num = int(transform[aa])
+		print pos+1, '\t', mut, '\t', aa, '\t', T1_0, '\t', T1_1, '\t', T2_0, '\t', T2_1, '\t', T3_0, '\t', T3_1
+	except ValueError:
+		pass
+
+
+
+
+
+
+
+
+
+tsv_to_txt_ADR_scores.py script:
+# How to run: 
+# tsv_to_txt_ADR_scores.py main_identifiers_scores.tsv > scores.txt
+# script also translates codons into amino acids
+
+import sys
+import cPickle as pic
+import numpy as np
+from collections import defaultdict
+import string
+import operator
+
+table = string.maketrans('T', 'U')
+TRANSLATE = {'ACC': 'T', 'GUC': 'V', 'ACA': 'T', 'AAA': 'K', 'GUU': 'V', 'AAC': 'N', 'CCU': 'P', 'UAU': 'Y', 'AGC': 'S', 'CUU': 'L', 'CAU': 'H', 'AAU': 'N', 'ACU': 'T', 'GUG': 'V', 'CAC': 'H', 'ACG': 'T', 'AGU': 'S', 'CCA': 'P', 'CCG': 'P', 'CCC': 'P', 'UGU': 'C', 'GGU': 'G', 'UCU': 'S', 'AUG': 'M', 'UGC': 'C', 'CAG': 'Q', 'UGA': '*', 'UGG': 'W', 'CGG': 'R', 'UCG': 'S', 'AGG': 'R', 'GGG': 'G', 'UCC': 'S', 'UCA': 'S', 'UAA': '*', 'GGA': 'G', 'UAC': 'Y', 'CGU': 'R', 'GAA': 'E', 'AUA': 'I', 'GCA': 'A', 'AUC': 'I', 'GGC': 'G', 'GCG': 'A', 'CGC': 'R', 'CUG': 'L', 'GAG': 'E', 'CUC': 'L', 'AGA': 'R', 'CUA': 'L', 'GCC': 'A', 'AUU': 'I', 'AAG': 'K', 'CAA': 'Q', 'UUU': 'F', 'GAC': 'D', 'GUA': 'V', 'CGA': 'R', 'UAG': '*', 'GCU': 'A', 'UUG': 'L', 'UUA': 'L', 'GAU': 'D', 'UUC': 'F'}
+transform = {'A': 9, 'C': 8, 'E': 20, 'D': 19, 'G': 10, 'F': 2, 'I': 5, 'H': 16, 'K': 18, '*': 0, 'M': 6, 'L': 4, 'N': 14, 'Q': 15, 'P': 11, 'S': 12, 'R': 17, 'T': 13, 'W': 1, 'V': 7, 'Y': 3}
+
+tsv =  open(sys.argv[1], 'r')
+
+headers = tsv.readline().strip().split()
+for line in tsv:
+	l_list = line.strip().split()
+	ID = l_list[0]
+	score = float(l_list[1])
+	try:
+		pos = int(ID.split('_')[0])
+		mut = ID.split('_')[1]
+		codon = string.translate(mut, table)
+		aa = str(TRANSLATE[codon])
+		aa_num = int(transform[aa])
+		print pos+1, '\t', mut, '\t', aa, '\t', score
+	except ValueError:
+		pass
+
+
+
+
+
+
+
+
+
+
+
+PlotFitnessDistributions_ADR.py script:
+#Usage: python PlotFitnessDistributions_ADR.py main_identifiers_scores.tsv > WT_fitnesses (uncomment print command for WT_fitnesses, comment out the other print command)
+#Usage: python PlotFitnessDistributions_ADR.py main_identifiers_scores.tsv > fitnesses (uncomment print command for fitnesses, comment out the other print command)
+
+import Bio
+from Bio.Seq import Seq
+from Bio.Alphabet import generic_dna, generic_protein
+import sys
+import numpy as np
+#import matplotlib.pyplot as plt
+#import seaborn as sns
+
+infile = open(sys.argv[1], 'r')
+data = {}
+
+WT_seq = "MDSLDQCIVNACKNSWDKSYLAGTPNKDNCSGFVQSVAAELGVPMPRGNANAMVDGLEQSWTKLASGAEAAQKAAQGFLVIAGLKGRTYGHVAVVISGPLYRQKYPMCWCGSIAGAVGQSQGLKSVGQVWNRTDRDRLNYYVYSLASCSLPRAS"
+
+WT_fitnesses = []
+fitnesses = []
+
+counter = 0
+for line in infile:
+	counter +=1
+	
+	if counter <=2:
+		continue
+	
+	elif line[:3] == "_wt":
+		continue
+		
+	fields = line.split()
+	score = float(fields[-1])
+	
+	pos, codon = fields[0].split("_")
+	
+	pos = int(pos)
+	seq = Seq(codon, generic_dna)
+	aa = str(seq.translate())
+	
+	fitnesses.append(score)
+	if aa == WT_seq[pos]:
+		WT_fitnesses.append(score)	
+		#print pos+1, '\t', seq, '\t', aa, '\t', score
+	elif not aa == WT_seq[pos]:
+		fitnesses.append(score)
+		#print pos+1, '\t', seq, '\t', aa, '\t', score
+	else:
+		pass
