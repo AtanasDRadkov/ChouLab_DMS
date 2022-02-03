@@ -1,0 +1,437 @@
+Choulab workflow
+
+1
+remove last 57bp from read1 (1to267 out of 324 total)
+reverse complement read1
+
+Bash scripts:
+cat library_S1_L001_R1_001.fastq | python fqToTab.py - | awk '{print "@"$1"\n"substr($3,1,267)"\n+\n"substr($4,1,267)}' > read1_1to267.fastq
+
+cat read1_1to267.fastq | python reverseCompforfq101.py - > read1_RC_1to267.fastq
+
+2
+remove last 56bp from read2 (1to245 out of 301 total)
+
+Bash script:
+cat library_S1_L001_R2_001.fastq | python fqToTab.py - | awk '{print "@"$1"\n"substr($3,1,245)"\n+\n"substr($4,1,245)}' > read2_1to245.fastq
+
+3
+join line by line, for every line
+read2 to read1 from above
+merge.py follows below:
+
+with open('read2_1to245.txt','r') as read1_file, open('read1_RC_1to267.txt','r') as read2_file, open('merged_DNA_sequences.txt','w') as output_file:
+      for line1 in read1_file:
+          line2=read2_file.readline()
+          merged_line_list=list(line1[:-1]) # Take the lines from the forward read, and put them in a list
+          merged_line_list.append(line2) # add the lines of the reverse read
+          merged_line="".join(merged_line_list) # turn the list into a string
+          output_file.write(merged_line)
+
+4
+use fqToTab.py script code:
+print only one sample ID on line1
+print only one + on line3
+
+Bash script:
+cat merged_DNA_sequences.txt | python fqToTab.py - | awk '{print "@"substr($1,1,44)"\n"$2"\n+\n"$3}' > merged_reads.txt
+
+5
+create an environment in conda with python2.7.14 (in my case, I named the environment biopython)
+install biopython with pip
+
+6
+It is a good idea to take just 25 or 50 lines of the data and run everything through that first to make sure it works
+Especially making sure that you are selecting the correct regions of the sequence (for example, the barcode region is 497:512, or the last 15 nucleotides, and the Tae1 sequence is 7:466, or 459 nucleotides total length)
+
+5
+make dictionary (run in biopython environment in conda):
+run on cluster - pickle takes too long on regular computer !!!
+python 02_pair_reads.py merged_reads.fastq merged_reads.fastq
+
+6
+associate barcode with variant (run in biopython environment in conda):
+run on cluster - pickle takes too long on regular computer !!!
+python 03_sequences_assigned_to_barcode.py pair_dict.pkl
+
+7
+generate consensus (run in biopython environment in conda):
+run on cluster - pickle takes too long on regular computer !!!
+python 04_generate_consensus.py barcode_to_Ub.pkl
+
+
+Tae1 wt
+GACAGTCTCGATCAATGCATCGTCAACGCCTGCAAGAACAGCTGGGACAAGAGCTACCTGGCCGGCACCCCGAACAAGGACAACTGTTCCGGCTTCGTCCAGTCGGTGGCCGCCGAGCTGGGCGTACCGATGCCCCGCGGCAACGCCAACGCCATGGTCGACGGCCTGGAGCAGAGCTGGACCAAGCTCGCCTCCGGCGCCGAGGCCGCGCAGAAGGCGGCCCAGGGCTTCCTGGTGATCGCCGGCCTGAAGGGCCGCACCTACGGGCACGTCGCGGTGGTCATCAGCGGTCCGCTGTATCGGCAGAAGTACCCGATGTGCTGGTGCGGCAGCATCGCCGGCGCGGTCGGCCAGAGCCAGGGCCTGAAGTCGGTCGGCCAGGTGTGGAATCGCACCGACCGCGACCGCCTCAACTACTACGTCTACTCCCTGGCCAGTTGCAGCCTGCCCAGGGCCAGT
+
+Tae1 wt
+DSLDQCIVNACKNSWDKSYLAGTPNKDNCSGFVQSVAAELGVPMPRGNANAMVDGLEQSWTKLASGAEAAQKAAQGFLVIAGLKGRTYGHVAVVISGPLYRQKYPMCWCGSIAGAVGQSQGLKSVGQVWNRTDRDRLNYYVYSLASCSLPRAS
+
+
+
+
+
+
+
+FqToTab.py script:
+
+import sys
+#file = sys.stdin
+f=sys.stdin
+for line in f:
+    hdr = line.rstrip('\n')[1:]
+    seq = f.next().rstrip('\n')
+    f.next()
+    qual = f.next().rstrip('\n')
+    print "\t".join( (hdr, seq, qual ) )
+
+
+
+
+
+
+
+
+reverseCompforfq101.py script: 
+ 
+import sys
+def reverseComplement(sequence):
+	complement = {'A':'T','C':'G','G':'C','T':'A','N':'N'}
+	return "".join([complement.get(nt, '') for nt in sequence[::-1]])
+f=sys.stdin
+for line in f:
+    hdr = line.rstrip('\n')
+    seq = f.next().rstrip('\n')
+    rcseq = reverseComplement(seq)
+    f.next()
+    qual = f.next().rstrip('\n')[::-1]
+    print "\n".join( (hdr, rcseq, "+", qual ) )
+
+        
+
+
+
+
+
+
+
+02_pair_reads.py script:
+
+import Bio
+from Bio import SeqIO
+import sys
+import cPickle as pic
+
+pair_dict = {}
+
+input_file_1 = open(sys.argv[1], 'rU') # output of script01 (fastq format), these sequences contain the N18 bar-code
+input_file_2 = open(sys.argv[2], 'rU') # raw read2 fastq file from the sequencer
+
+input1_records_count = 0 # the number of records in the input_file_1 
+for record in SeqIO.parse(input_file_1, 'fastq'):
+	input1_records_count += 1
+	id_line = record.id.split(':')
+	identity_key = '%s-%s-%s-%s' % (id_line[3], id_line[4], id_line[5], id_line[6]) # the key for the pair_dict 
+	bar_code = str(record.seq[497:512]) #the value in pair_dict[identity_key][0]
+	pair_dict[identity_key] = [bar_code]
+	print 'Selected Sequences - record # %d' %(input1_records_count) # to track progress
+input_file_1.close()	
+
+input2_records_count = 0 # number of records in input_file_2 (raw reads file)
+matched_reads = 0 # the number of records in input_file_2 that match to an ID from input_file_1
+
+for record in SeqIO.parse(input_file_2, 'fastq'):
+	input2_records_count +=1
+	print 'Checking for match - record # %d' %(input2_records_count) # to track progress
+	id_line = record.id.split(':')
+	identity_key = '%s-%s-%s-%s' % (id_line[3], id_line[4], id_line[5], id_line[6]) # the key for the pair_dict
+	if identity_key in pair_dict: 
+		pair_dict[identity_key].append(str(record.seq)) # appends the Read2 sequence to the pair_dict value as pair_dict[identity_key][1]
+		matched_reads += 1
+		print identity_key, matched_reads, input2_records_count
+		print pair_dict[identity_key]
+input_file_2.close()	
+	
+pic.dump(pair_dict, open('pair_dict.pkl', 'wb')) # dumps the dictionary as a pickle object. this will be the input for script03
+
+log_file =  open('Script02_logfile.txt', 'w') # writes a logfile documenting the dictionary composition. Use the pickle_printer script to examine the dictionary contents 
+
+log_file.write('Dict contains = %d \n' % (input1_records_count) )
+log_file.write('Total reads queried = %d \n' % (input2_records_count) )
+log_file.write('Matched reads =  %d \n' % (matched_reads) )
+log_file.close()
+
+
+
+
+
+
+
+
+
+03_sequences_assigned_to_barcode.py script:
+
+import sys
+import cPickle as pic
+
+pair_dict = pic.load( open( sys.argv[1], "rb" ) ) #input dictionary from command line, this is the output of 02
+
+barcode_to_sequence_dict = {} 
+
+for key in pair_dict:
+	barcode = pair_dict[key][0] 
+	ub_read_sequence = pair_dict[key][1] 
+	try: #checks if first part of value list (barcode) has already been seen
+		barcode_to_sequence_dict[barcode].append(ub_read_sequence)
+	except KeyError:
+		barcode_to_sequence_dict[barcode] = [ub_read_sequence]
+
+pic.dump(barcode_to_sequence_dict, open('barcode_to_Ub.pkl', 'wb'))
+
+
+
+
+
+
+
+
+
+
+
+
+04_generate_consensus.py script (for codons dictionary):
+
+import Bio
+from Bio import SeqIO
+from Bio.Seq import Seq
+from Bio import motifs
+from Bio.Alphabet import IUPAC
+import sys
+import cPickle as pic
+
+dic = pic.load(open(sys.argv[1] , 'rb'))
+
+primer1 = 'ATGCTTACTA' 
+# this is just a constant region on my construct, between the barcode and the variable region of Tae1 DNA sequence
+wt1 = 'GACAGTCTCGATCAATGCATCGTCAACGCCTGCAAGAACAGCTGGGACAAGAGCTACCTGGCCGGCACCCCGAACAAGGACAACTGTTCCGGCTTCGTCCAGTCGGTGGCCGCCGAGCTGGGCGTACCGATGCCCCGCGGCAACGCCAACGCCATGGTCGACGGCCTGGAGCAGAGCTGGACCAAGCTCGCCTCCGGCGCCGAGGCCGCGCAGAAGGCGGCCCAGGGCTTCCTGGTGATCGCCGGCCTGAAGGGCCGCACCTACGGGCACGTCGCGGTGGTCATCAGCGGTCCGCTGTATCGGCAGAAGTACCCGATGTGCTGGTGCGGCAGCATCGCCGGCGCGGTCGGCCAGAGCCAGGGCCTGAAGTCGGTCGGCCAGGTGTGGAATCGCACCGACCGCGACCGCCTCAACTACTACGTCTACTCCCTGGCCAGTTGCAGCCTGCCCAGGGCCAGT'
+
+
+allele_dic = {}
+non_singles = {}
+allele_dic2 = {}
+non_singles2 = {}
+allele_dump = {}
+non_singles_dump = {}
+
+single_count = 1
+non_single_count = 1
+count = 1
+WT_count = 1
+
+for key in dic:
+	print key , count
+	count +=1
+	glob1 = []
+	for seq_index in range(len(dic[key])):
+		if dic[key][seq_index][487:497] == primer1: # WATCH THE SELECTION HERE - THE NUMBERING IS VERY COUNTERINTUITIVE!!!
+			sequence = dic[key][seq_index]
+			glob1.append(Seq(sequence[7:466])) # WATCH THE SELECTION HERE - THE NUMBERING IS VERY COUNTERINTUITIVE!!!
+		else:
+			pass
+	try:
+		motif1 = motifs.create(glob1)
+	
+		allele_gen1 = motifs.create([motif1.consensus, wt1])
+		codon = 'NNN'
+		codon_list = []
+		for index in range(len(wt1)):
+			letter = wt1[index]
+			if allele_gen1.counts[letter][index] == 1:
+				aa_position = int(float(index)/3)
+				codon = str(motif1.consensus[(aa_position*3):((aa_position*3)+3)])
+				to_append = str(aa_position+2)+'_'+codon
+				if to_append in codon_list:
+					pass
+				else:
+					codon_list.append(to_append)	
+		if len(codon_list) == 1:
+			split_codon = codon_list[0].split('_')
+			codon_tuple = (int(split_codon[0]), str(split_codon[1]))
+			allele_dic[key] = codon_tuple	
+			print 'single' + str(single_count)
+			single_count += 1
+		elif len(codon_list)== 0:
+			print 'WT' + str(WT_count)
+			WT_count += 1
+			allele_dic[key] = (int(0), str('WT'))
+		else:
+			non_singles[key] = codon_list
+			print 'non_single' + str(non_single_count)
+			non_single_count += 1
+	except TypeError:
+		pass		
+print '%d singles' %(single_count - 1)
+print '%d WT' %(WT_count - 1)
+print '%d non_singles' %(non_single_count - 1) 
+pic.dump(allele_dic, open('allele_dic_with_WT.pkl', 'wb'))
+pic.dump(non_singles, open('non_singles.pkl', 'wb'))
+
+
+
+
+
+
+
+
+
+04_generate_consensus.py script (for DNA dictionary):
+import Bio
+from Bio import SeqIO
+from Bio.Seq import Seq
+from Bio import motifs
+from Bio.Alphabet import IUPAC
+import sys
+import cPickle as pic
+
+dic = pic.load(open(sys.argv[1] , 'rb'))
+
+primer1 = 'ATGCTTACTA'
+wt1 = 'GACAGTCTCGATCAATGCATCGTCAACGCCTGCAAGAACAGCTGGGACAAGAGCTACCTGGCCGGCACCCCGAACAAGGACAACTGTTCCGGCTTCGTCCAGTCGGTGGCCGCCGAGCTGGGCGTACCGATGCCCCGCGGCAACGCCAACGCCATGGTCGACGGCCTGGAGCAGAGCTGGACCAAGCTCGCCTCCGGCGCCGAGGCCGCGCAGAAGGCGGCCCAGGGCTTCCTGGTGATCGCCGGCCTGAAGGGCCGCACCTACGGGCACGTCGCGGTGGTCATCAGCGGTCCGCTGTATCGGCAGAAGTACCCGATGTGCTGGTGCGGCAGCATCGCCGGCGCGGTCGGCCAGAGCCAGGGCCTGAAGTCGGTCGGCCAGGTGTGGAATCGCACCGACCGCGACCGCCTCAACTACTACGTCTACTCCCTGGCCAGTTGCAGCCTGCCCAGGGCCAGT'
+
+
+allele_dic = {}
+non_singles = {}
+allele_dic2 = {}
+non_singles2 = {}
+allele_dump = {}
+non_singles_dump = {}
+
+single_count = 1
+non_single_count = 1
+count = 1
+WT_count = 1
+
+for key in dic:
+	print key , count
+	count +=1
+	glob1 = []
+	for seq_index in range(len(dic[key])):
+		if dic[key][seq_index][487:497] == primer1:
+			sequence = dic[key][seq_index]
+			glob1.append(Seq(sequence[7:466]))
+		else:
+			pass
+	try:
+		motif1 = motifs.create(glob1)
+	
+		allele_gen1 = motifs.create([motif1.consensus, wt1])
+		codon = 'NNN'
+		codon_list = []
+		for index in range(len(wt1)):
+			letter = wt1[index]
+			if allele_gen1.counts[letter][index] == 1:
+				aa_position = int(float(index)/3)
+				codon = str(motif1.consensus[(aa_position*3):((aa_position*3)+3)])
+				to_append = str(aa_position+1)+'_'+codon # modified this to (aa_position+1) from (aa_position+2)
+				if to_append in codon_list:
+					pass
+				else:
+					codon_list.append(to_append)	
+		if len(codon_list) == 1:
+			#split_codon = codon_list[0].split('_')
+			#codon_tuple = (int(split_codon[0]), str(split_codon[1]))
+			allele_dic[key] = str(motif1.consensus)
+			print 'single' + str(single_count)
+			single_count += 1
+		elif len(codon_list)== 0:
+			print 'WT' + str(WT_count)
+			WT_count += 1
+			allele_dic[key] = str(motif1.consensus)
+		else:
+			non_singles[key] = codon_list
+			print 'non_single' + str(non_single_count)
+			non_single_count += 1
+	except TypeError:
+		pass		
+
+
+print '%d singles' %(single_count - 1)
+print '%d WT' %(WT_count - 1)
+print '%d non_singles' %(non_single_count - 1) 
+pic.dump(allele_dic, open('allele_dic_with_WT.pkl', 'wb'))
+pic.dump(non_singles, open('non_singles.pkl', 'wb'))
+
+
+
+
+
+
+
+
+
+
+Take dictionary and convert it to a format accepted by Enrich2:
+# to take a BC dict and convert it to a BC.txt file for Enrich2
+# usage:
+# python prep_BC.py BC_dict.pkl > output_BC.txt
+#
+# The entries should be further modified in a text editor from this:
+#CTTTTGCAGAATTCT	_wt
+#AAAACGATTGTCAAT	_wt
+#GCTATCTACTTTCTG	(86, 'AGC')
+#AGAATCTCAGTAATG	_wt
+#ATATAGGGGCATCTT	_wt
+#ATAATTGAGGGAAAA	(119, 'TGC')
+#ATTTTGATTATCATA	(72, 'AAA')
+#GTTGTGTGGGCGCAT	(54, 'GCC')
+#CTTTTGCAGAATTCT	_wt
+# To this:
+#AAAACGATTGTCAAT	_wt
+#GCTATCTACTTTCTG	86_AGC
+#AGAATCTCAGTAATG	_wt
+#ATATAGGGGCATCTT	_wt
+#ATAATTGAGGGAAAA	119_TGC
+#ATTTTGATTATCATA	72_AAA
+#GTTGTGTGGGCGCAT	54_GCC
+# Basically you would need to remove some parenthesis and apostrophes, and place in an underscore
+# Also double check for any barcodes containing N!!!
+##################################
+#this is the prep_BC.py script for preparing codon dictionary:
+#use as input the dictionary prepared with "04_generate_consensus.py script (for codons dictionary)"
+import sys
+import cPickle as pic
+
+BC_dict = pic.load(open(sys.argv[1]))
+
+for BC in BC_dict:
+	if BC_dict[BC] == (0, 'WT'):
+		print '%s\t_wt'%(BC)
+	else:
+		print '%s\t%s'%(BC,BC_dict[BC])  
+
+
+
+
+
+
+
+
+
+Take dictionary and convert it to a format accepted by Enrich2:
+#this is the prep_BC.py script for preparing DNA sequence dictionary:
+#use as input the dictionary prepared with "04_generate_consensus.py script (for DNA dictionary)"
+# to take a BC dict and convert it to a BC.txt file for Enrich2
+# usage:
+# python prep_BC.py BC_dict.pkl > output_BC.txt
+# 
+# Also double check for any barcodes containing N!!!
+##################################
+import sys
+import cPickle as pic
+
+BC_dict = pic.load(open(sys.argv[1]))
+
+for BC in BC_dict:
+	#if BC_dict[BC] == (0, 'WT'):
+	#	print '%s\t_wt'%(BC)
+	#else:
+	print '%s\t%s'%(BC,BC_dict[BC]) 
