@@ -1,2 +1,2 @@
 # ChouLab_DMS
-Hello
+This the Chou lab repository (UCSF) for running deep mutational scanning
